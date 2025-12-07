@@ -248,8 +248,8 @@ export function usePlaySync({
       const url = `/play?${params.toString()}`;
       console.log('[PlaySync] Member redirecting to:', url);
 
-      // 使用 window.location.href 强制完整刷新页面，确保播放器重新加载
-      window.location.href = url;
+      // 使用 router.push 进行导航,支持在同一页面更新参数
+      router.push(url);
     };
 
     socket.on('play:update', handlePlayUpdate);
@@ -367,18 +367,45 @@ export function usePlaySync({
     };
   }, [socket, currentRoom, artPlayerRef, watchRoom, broadcastPlayState, isInRoom, playerReady]);
 
+  // 使用ref跟踪上一次的值，用于检测真正的变化
+  const lastBroadcastRef = useRef<{
+    videoId: string;
+    source: string;
+    episode: number;
+  } | null>(null);
+
   // 房主：监听视频/集数/源变化并广播
   useEffect(() => {
-    if (!isOwner || !socket || !currentRoom || !isInRoom || !watchRoom) return;
+    if (!isOwner || !socket || !currentRoom || !isInRoom || !watchRoom) {
+      // 如果不是房主或不在房间，重置跟踪
+      lastBroadcastRef.current = null;
+      return;
+    }
     if (!videoId || !videoUrl) return;
 
-    console.log('[PlaySync] Video params changed, will broadcast after delay:', {
+    const currentState = {
       videoId,
-      currentSource,
-      currentEpisode
+      source: currentSource,
+      episode: currentEpisode || 1,
+    };
+
+    // 检查是否需要广播
+    const shouldBroadcast = !lastBroadcastRef.current ||
+      lastBroadcastRef.current.videoId !== currentState.videoId ||
+      lastBroadcastRef.current.source !== currentState.source ||
+      lastBroadcastRef.current.episode !== currentState.episode;
+
+    if (!shouldBroadcast) {
+      console.log('[PlaySync] No change detected, skipping broadcast');
+      return;
+    }
+
+    console.log('[PlaySync] Detected change, will broadcast:', {
+      from: lastBroadcastRef.current,
+      to: currentState
     });
 
-    // 延迟广播，避免初始化时触发
+    // 延迟广播，确保页面已经稳定
     const timer = setTimeout(() => {
       const state: PlayState = {
         type: 'play',
@@ -395,10 +422,66 @@ export function usePlaySync({
 
       console.log('[PlaySync] Broadcasting play:change:', state);
       watchRoom.changeVideo(state);
-    }, 1000); // 1秒延迟，给页面足够时间初始化
+
+      // 更新跟踪值
+      lastBroadcastRef.current = currentState;
+    }, 500); // 减少延迟到500ms
 
     return () => clearTimeout(timer);
-  }, [isOwner, socket, currentRoom, isInRoom, watchRoom, videoId, currentEpisode, currentSource]);
+  }, [isOwner, socket, currentRoom, isInRoom, watchRoom, videoId, currentEpisode, currentSource, videoUrl, videoName, videoYear, searchTitle, artPlayerRef]);
+
+  // 房主：加入房间时立即广播当前播放状态
+  const lastRoomStateRef = useRef<{ isOwner: boolean; roomId: string | null }>({ isOwner: false, roomId: null });
+
+  useEffect(() => {
+    const currentRoomId = currentRoom?.id || null;
+    const prevRoomState = lastRoomStateRef.current;
+
+    // 检测是否刚成为房主或刚加入房间
+    const justBecameOwner = !prevRoomState.isOwner && isOwner;
+    const justJoinedRoom = !prevRoomState.roomId && currentRoomId;
+
+    // 更新ref
+    lastRoomStateRef.current = { isOwner, roomId: currentRoomId };
+
+    if (!isOwner || !socket || !currentRoom || !isInRoom || !watchRoom) return;
+    if (!videoId || !videoUrl) return;
+    if (!justBecameOwner && !justJoinedRoom) return;
+
+    console.log('[PlaySync] Owner joined room, broadcasting current state immediately:', {
+      justBecameOwner,
+      justJoinedRoom
+    });
+
+    // 立即广播当前状态
+    const state: PlayState = {
+      type: 'play',
+      url: videoUrl,
+      currentTime: artPlayerRef.current?.currentTime || 0,
+      isPlaying: artPlayerRef.current?.playing || false,
+      videoId,
+      videoName,
+      videoYear,
+      searchTitle,
+      episode: currentEpisode,
+      source: currentSource,
+    };
+
+    // 短暂延迟确保房间连接已稳定
+    const timer = setTimeout(() => {
+      console.log('[PlaySync] Broadcasting play:change on room join:', state);
+      watchRoom.changeVideo(state);
+
+      // 同时更新跟踪值，避免立即重复广播
+      lastBroadcastRef.current = {
+        videoId,
+        source: currentSource,
+        episode: currentEpisode || 1,
+      };
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [isOwner, currentRoom, socket, isInRoom, watchRoom, videoId, videoUrl, videoName, videoYear, searchTitle, currentEpisode, currentSource, artPlayerRef]);
 
   return {
     isInRoom,

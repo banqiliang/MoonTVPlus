@@ -1594,6 +1594,63 @@ function PlayPageClient() {
     initSkipConfig();
   }, []);
 
+  // 监听 URL 参数变化，处理换源和换视频（用于房员跟随房主操作）
+  useEffect(() => {
+    const urlSource = searchParams.get('source');
+    const urlId = searchParams.get('id');
+
+    // 只在URL参数存在且与当前状态不同时才处理
+    if (urlSource && urlId && (urlSource !== currentSource || urlId !== currentId)) {
+      console.log('[PlayPage] Detected source/id change from URL:', {
+        urlSource,
+        urlId,
+        currentSource,
+        currentId
+      });
+
+      // 检查新的source和id是否在可用源列表中
+      const targetSource = availableSources.find(
+        (source) => source.source === urlSource && source.id === urlId
+      );
+
+      if (targetSource) {
+        console.log('[PlayPage] Found matching source in available sources, updating...');
+
+        // 记录当前播放进度
+        const currentPlayTime = artPlayerRef.current?.currentTime || 0;
+
+        // 获取URL中的episode参数
+        const episodeParam = searchParams.get('episode');
+        const targetEpisode = episodeParam ? parseInt(episodeParam, 10) - 1 : 0;
+
+        // 更新视频源信息
+        setCurrentSource(urlSource);
+        setCurrentId(urlId);
+        setVideoTitle(targetSource.title);
+        setVideoYear(targetSource.year);
+        setVideoCover(targetSource.poster);
+        setVideoDoubanId(targetSource.douban_id || 0);
+        setDetail(targetSource);
+
+        // 更新集数
+        if (targetEpisode >= 0 && targetEpisode < targetSource.episodes.length) {
+          setCurrentEpisodeIndex(targetEpisode);
+
+          // 如果是同一集,保存播放进度以便恢复
+          if (targetEpisode === currentEpisodeIndex && currentPlayTime > 1) {
+            resumeTimeRef.current = currentPlayTime;
+          } else {
+            resumeTimeRef.current = null;
+          }
+        }
+      } else {
+        console.log('[PlayPage] Source not found in available sources, reloading page...');
+        // 如果新源不在可用列表中,强制刷新页面重新加载
+        window.location.reload();
+      }
+    }
+  }, [searchParams, currentSource, currentId, availableSources, currentEpisodeIndex]);
+
   // 处理换源
   const handleSourceChange = async (
     newSource: string,
