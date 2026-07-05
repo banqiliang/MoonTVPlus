@@ -5,6 +5,12 @@ import { parseAuthInfo } from '@/lib/auth';
 import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 import {
+  checkLoginBan,
+  getLoginClientIp,
+  recordLoginFailure,
+  recordLoginSuccess,
+} from '@/lib/login-fail2ban';
+import {
   generateRefreshToken,
   generateTokenId,
   storeRefreshToken,
@@ -152,6 +158,11 @@ function getDeviceInfo(request: NextRequest): string {
     return 'MoonTVPlus APP';
   }
 
+  // 检查是否为 OrionTV
+  if (userAgent.toLowerCase().includes('oriontv')) {
+    return 'OrionTV';
+  }
+
   // 简单解析 User-Agent
   let browser = 'Unknown Browser';
   let os = 'Unknown OS';
@@ -172,6 +183,20 @@ function getDeviceInfo(request: NextRequest): string {
 
 export async function POST(req: NextRequest) {
   try {
+    const clientIp = getLoginClientIp(req);
+    const banStatus = checkLoginBan(clientIp);
+    if (banStatus.banned) {
+      return NextResponse.json(
+        { error: '登录失败次数过多，请稍后再试' },
+        {
+          status: 429,
+          headers: banStatus.retryAfterSeconds
+            ? { 'Retry-After': String(banStatus.retryAfterSeconds) }
+            : undefined,
+        }
+      );
+    }
+
     // 获取站点配置
     const adminConfig = await getConfig();
     const siteConfig = adminConfig.SiteConfig;
@@ -201,11 +226,14 @@ export async function POST(req: NextRequest) {
       }
 
       if (password !== envPassword) {
+        recordLoginFailure(clientIp);
         return NextResponse.json(
           { ok: false, error: '密码错误' },
           { status: 401 }
         );
       }
+
+      recordLoginSuccess(clientIp);
 
       // 验证成功，设置认证cookie
       const username = process.env.USERNAME || 'default';
@@ -274,6 +302,8 @@ export async function POST(req: NextRequest) {
       username === process.env.USERNAME &&
       password === process.env.PASSWORD
     ) {
+      recordLoginSuccess(clientIp);
+
       // 验证成功，设置认证cookie
       const deviceInfo = getDeviceInfo(req);
       const cookieValue = await generateAuthCookie(
@@ -297,6 +327,7 @@ export async function POST(req: NextRequest) {
 
       return response;
     } else if (username === process.env.USERNAME) {
+      recordLoginFailure(clientIp);
       return NextResponse.json({ error: '用户名或密码错误' }, { status: 401 });
     }
 
@@ -321,11 +352,14 @@ export async function POST(req: NextRequest) {
     }
 
     if (!pass) {
+      recordLoginFailure(clientIp);
       return NextResponse.json(
         { error: '用户名或密码错误' },
         { status: 401 }
       );
     }
+
+    recordLoginSuccess(clientIp);
 
     // 验证成功，设置认证cookie
     const deviceInfo = getDeviceInfo(req);

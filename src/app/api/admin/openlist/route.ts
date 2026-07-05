@@ -10,6 +10,25 @@ import { OpenListClient } from '@/lib/openlist.client';
 export const runtime = 'nodejs';
 
 /**
+ * 清理字符串中的 BOM 和其他不可见字符
+ */
+function cleanPath(path: string): string {
+  // 移除 UTF-8 BOM (U+FEFF) 和其他零宽度字符
+  let cleaned = path
+    .replace(/^\uFEFF/, '') // 移除开头的 BOM
+    .replace(/\uFEFF/g, '') // 移除所有 BOM
+    .replace(/[\u200B-\u200D\uFEFF]/g, '') // 移除零宽度字符
+    .trim(); // 移除首尾空白
+
+  // 移除末尾的 /（除非路径就是 /）
+  if (cleaned.length > 1 && cleaned.endsWith('/')) {
+    cleaned = cleaned.slice(0, -1);
+  }
+
+  return cleaned;
+}
+
+/**
  * POST /api/admin/openlist
  * 保存 OpenList 配置
  */
@@ -26,7 +45,22 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { action, Enabled, URL, Username, Password, RootPaths, OfflineDownloadPath, ScanInterval, ScanMode, DisableVideoPreview } = body;
+    const {
+      action,
+      Enabled,
+      URL,
+      Username,
+      Password,
+      RootPaths,
+      OfflineDownloadPath,
+      OfflineDownloadUseCustomSource,
+      OfflineDownloadURL,
+      OfflineDownloadUsername,
+      OfflineDownloadPassword,
+      ScanInterval,
+      ScanMode,
+      DisableVideoPreview,
+    } = body;
 
     const authInfo = getAuthInfoFromCookie(request);
     if (!authInfo || !authInfo.username) {
@@ -55,6 +89,10 @@ export async function POST(request: NextRequest) {
           Password: Password || '',
           RootPaths: RootPaths || ['/'],
           OfflineDownloadPath: OfflineDownloadPath || '/',
+          OfflineDownloadUseCustomSource: OfflineDownloadUseCustomSource || false,
+          OfflineDownloadURL: OfflineDownloadURL || '',
+          OfflineDownloadUsername: OfflineDownloadUsername || '',
+          OfflineDownloadPassword: OfflineDownloadPassword || '',
           LastRefreshTime: adminConfig.OpenListConfig?.LastRefreshTime,
           ResourceCount: adminConfig.OpenListConfig?.ResourceCount,
           ScanInterval: 0,
@@ -78,6 +116,16 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      if (
+        OfflineDownloadUseCustomSource &&
+        (!OfflineDownloadURL || !OfflineDownloadUsername || !OfflineDownloadPassword)
+      ) {
+        return NextResponse.json(
+          { error: '请提供离线下载 OpenList URL、账号和密码' },
+          { status: 400 }
+        );
+      }
+
       // 验证 RootPaths
       if (!Array.isArray(RootPaths) || RootPaths.length === 0) {
         return NextResponse.json(
@@ -85,6 +133,9 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
+
+      // 清理 RootPaths 中的 BOM 和不可见字符
+      const cleanedRootPaths = RootPaths.map(cleanPath);
 
       // 验证扫描间隔
       const scanInterval = parseInt(ScanInterval) || 0;
@@ -108,13 +159,35 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      if (OfflineDownloadUseCustomSource) {
+        try {
+          console.log('[OpenList Config] 验证离线下载 OpenList 账号密码');
+          await OpenListClient.login(
+            OfflineDownloadURL,
+            OfflineDownloadUsername,
+            OfflineDownloadPassword
+          );
+          console.log('[OpenList Config] 离线下载 OpenList 账号密码验证成功');
+        } catch (error) {
+          console.error('[OpenList Config] 离线下载 OpenList 账号密码验证失败:', error);
+          return NextResponse.json(
+            { error: '离线下载 OpenList 账号密码验证失败: ' + (error as Error).message },
+            { status: 400 }
+          );
+        }
+      }
+
       adminConfig.OpenListConfig = {
         Enabled: true,
         URL,
         Username,
         Password,
-        RootPaths,
+        RootPaths: cleanedRootPaths,
         OfflineDownloadPath: OfflineDownloadPath || '/',
+        OfflineDownloadUseCustomSource: OfflineDownloadUseCustomSource || false,
+        OfflineDownloadURL: OfflineDownloadURL || '',
+        OfflineDownloadUsername: OfflineDownloadUsername || '',
+        OfflineDownloadPassword: OfflineDownloadPassword || '',
         LastRefreshTime: adminConfig.OpenListConfig?.LastRefreshTime,
         ResourceCount: adminConfig.OpenListConfig?.ResourceCount,
         ScanInterval: scanInterval,
